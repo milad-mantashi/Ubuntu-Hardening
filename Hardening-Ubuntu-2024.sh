@@ -2,7 +2,9 @@
 # CIS Hardening Script - Modular Version (Corrected)
 
 # Global Variables
-LOG_DIR="/home/$SUDO_USER/setup_logs/hardening.log"
+LOG_BASE="${SUDO_USER:-${USER:-root}}"
+LOG_DIR="/home/$LOG_BASE/setup_logs/hardening"
+if [[ "$LOG_BASE" == "root" ]]; then LOG_DIR="/root/setup_logs/hardening"; fi
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 CURRENT_SECTION=""
 
@@ -29,7 +31,7 @@ run_command() {
     local desc="$2"
     
     echo "  EXEC: $desc" >> "$LOG_DIR/section_logs/$CURRENT_SECTION/details.log"
-    if eval "$cmd" >> "$LOG_DIR/section_logs/$CURRENT_SECTION/details.log" 2>&1; then
+    if bash -c "$cmd" >> "$LOG_DIR/section_logs/$CURRENT_SECTION/details.log" 2>&1; then
         log_success "$desc"
     else
         log_error "$desc"
@@ -48,7 +50,7 @@ run_command "chmod og-rwx /boot/grub/grub.cfg" "1.2.3 Set grub.cfg permissions"
 
 start_section "1.3"
 run_command "apt install -y apparmor-utils apparmor-profiles apparmor-profiles-extra" "1.3.1 Install AppArmor"
-run_command "echo "Enabling in Enforce all AppArmor profiles"" "1.3.2 Set AppArmor profiles to complain mode"
+run_command 'echo "Set AppArmor profiles to complain mode"' "1.3.2 Set AppArmor profiles to complain mode"
 for profile in /etc/apparmor.d/*; do
   if grep -q '^profile ' "$profile"; then
     aa-complain "$profile"
@@ -59,7 +61,7 @@ run_command 'echo "kernel.yama.ptrace_scope = 1" > /etc/sysctl.d/60-yama.conf' "
 run_command "sysctl --system" "1.3.5 Apply kernel settings"
 
 start_section "1.4"
-run_command 'echo "* hard core 0" >> /etc/security/limits.conf' "1.4.1 Disable core dumps"
+run_command 'grep -qxF "* hard core 0" /etc/security/limits.conf || echo "* hard core 0" >> /etc/security/limits.conf' "1.4.1 Disable core dumps"
 run_command 'echo "fs.suid_dumpable = 0" > /etc/sysctl.d/60-coredump.conf' "1.4.2 Disable suid dumping"
 run_command "sysctl -p /etc/sysctl.d/60-coredump.conf" "1.4.3 Apply coredump settings"
 
@@ -130,8 +132,8 @@ done
 start_section "2.4"
 run_command "apt purge -y chrony" "2.4.1 Remove Chrony"
 run_command "grep -q '^\[Time\]' /etc/systemd/timesyncd.conf || echo '[Time]' >> /etc/systemd/timesyncd.conf" "2.4.2 Configure timesyncd"
-run_command "sed -i '/^\[Time\]/a NTP=time-a-wwv.nist.gov time-d-wwv.nist.gov' /etc/systemd/timesyncd.conf" "2.4.3 Set NTP servers"
-run_command "sed -i '/^\[Time\]/a FallbackNTP=time-b-wwv.nist.gov time-c-wwv.nist.gov' /etc/systemd/timesyncd.conf" "2.4.4 Set fallback NTP"
+run_command "grep -q '^NTP=' /etc/systemd/timesyncd.conf || sed -i '/^\[Time\]/a NTP=time-a-wwv.nist.gov time-d-wwv.nist.gov' /etc/systemd/timesyncd.conf" "2.4.3 Set NTP servers"
+run_command "grep -q '^FallbackNTP=' /etc/systemd/timesyncd.conf || sed -i '/^\[Time\]/a FallbackNTP=time-b-wwv.nist.gov time-c-wwv.nist.gov' /etc/systemd/timesyncd.conf" "2.4.4 Set fallback NTP"
 run_command "systemctl restart systemd-timesyncd" "2.4.5 Restart timesync"
 run_command "systemctl enable systemd-timesyncd" "2.4.6 Enable timesync"
 
@@ -171,7 +173,7 @@ run_command "ufw --force enable" "4.1.2 Enable UFW"
 run_command "ufw allow in on lo" "4.1.3 Allow loopback inbound"
 run_command "ufw allow out on lo" "4.1.4 Allow loopback outbound"
 run_command "ufw deny in from 127.0.0.0/8" "4.1.5 Block external loopback"
-run_command "ufw allow in from 192.168.10.2/24" "4.1.5 Allow internal network"
+run_command "ufw allow in from 192.168.10.0/24" "4.1.5 Allow internal network"
 run_command "ufw default deny incoming" "4.1.6 Default deny incoming"
 run_command "ufw default allow outgoing" "4.1.7 Default allow outgoing"
 run_command "ufw deny in from ::1" "4.1.8 Block IPv6 loopback"
@@ -180,7 +182,6 @@ run_command "ufw deny in from ::1" "4.1.8 Block IPv6 loopback"
 
 start_section "5.1"
 SSH_CONF=$(cat << 'EOF'
-Include /etc/ssh/sshd_config.d/*.conf
 LogLevel VERBOSE
 PermitRootLogin no
 MaxAuthTries 3
@@ -202,7 +203,7 @@ LoginGraceTime 60
 MaxStartups 10:30:60
 ClientAliveInterval 15
 Banner /etc/issue.net
-Ciphers -3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc,chacha20-poly1305@openssh.com
+Ciphers -3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc
 DisableForwarding yes
 GSSAPIAuthentication no
 HostbasedAuthentication no
@@ -212,7 +213,7 @@ MACs -hmac-md5,hmac-md5-96,hmac-ripemd160,hmac-sha1-96,umac-64@openssh.com,hmac-
 PermitUserEnvironment no
 EOF
 )
-run_command "echo '$SSH_CONF' > /etc/ssh/sshd_config" "5.1.* Configuration of SSH server"
+run_command "echo '$SSH_CONF' > /etc/ssh/sshd_config.d/00-hardening.conf" "5.1.* Configuration of SSH server"
 run_command "sudo systemctl enable ssh" "5.1.1 Enable SSH service"
 run_command "sudo systemctl restart ssh" "5.1.2 Restart SSH service"
 
@@ -237,19 +238,19 @@ run_command 'useradd -D -f 30' "5.4.1.2 Set inactive account lock to 30 days"
 #run_command 'echo 'password required pam_pwhistory.so remember=5 use_authtok' >> /etc/pam.d/common-password' "5.4.1.4 Limit password reuse (5)"
 run_command 'sed -i "/^ENCRYPT_METHOD/c\ENCRYPT_METHOD SHA512" /etc/login.defs' "5.4.1.5 Set password hashing to SHA512"
 run_command 'sed -i "/^UMASK/c\UMASK 077" /etc/login.defs' "5.4.2 Set default umask to 077"
-run_command 'echo "TMOUT=1800" >> /etc/profile.d/timeout.sh' "5.4.2 Set shell timeout (30 min)"
+run_command 'grep -qxF "TMOUT=1800" /etc/profile.d/timeout.sh 2>/dev/null || echo "TMOUT=1800" >> /etc/profile.d/timeout.sh' "5.4.2 Set shell timeout (30 min)"
 run_command 'chmod +x /etc/profile.d/timeout.sh' "5.4.2 Make timeout script executable"
 run_command 'passwd -l root' "5.4.3 Lock root account"
-run_command 'echo "umask 027" >> /etc/bash.bashrc' "5.4.4 Set bash default umask"
-run_command 'echo "umask 027" >> /root/.bash_profile' "5.4.4 Set bash default root umask"
-run_command 'echo "umask 027" >> /root/.bashrc' "5.4.4 Set bash default root umask"
+run_command 'grep -qxF "umask 027" /etc/bash.bashrc || echo "umask 027" >> /etc/bash.bashrc' "5.4.4 Set bash default umask"
+run_command 'grep -qxF "umask 027" /root/.bash_profile 2>/dev/null || echo "umask 027" >> /root/.bash_profile' "5.4.4 Set bash default root umask"
+run_command 'grep -qxF "umask 027" /root/.bashrc 2>/dev/null || echo "umask 027" >> /root/.bashrc' "5.4.4 Set bash default root umask"
 
 run_command 'awk -F: '\''($2 == "" ) { print $1 " does not have a password" }'\'' /etc/shadow | tee /var/log/empty_passwords.log' "5.5.1 Audit empty passwords"
 run_command 'grep "^+:" /etc/passwd | tee /var/log/legacy_passwd_entries.log' "5.5.2 Audit legacy NIS entries"
 run_command 'awk -F: '\''($3 == 0) { print $1 }'\'' /etc/passwd | grep -v "^root$" | tee /var/log/uid0_accounts.log' "5.5.3 Audit duplicate UID 0 accounts"
-run_command 'awk -F: '$3=="0"{print $1":"$3}' /etc/group" | tee /var/log/gid0_accounts.log' "5.5.4 Audit duplicate UID 0 accounts"
+run_command 'awk -F: '\''($3 == 0) { print $1 ":" $3 }'\'' /etc/group | tee /var/log/gid0_accounts.log' "5.5.4 Audit duplicate GID 0 accounts"
 run_command 'awk -F: '\''($3 == 0) { print $1 }'\'' /etc/passwd | grep -v "^root$" | tee /var/log/uid0_accounts.log' "5.5.5 Audit duplicate UID 0 accounts"
-run_command 'awk -F: '($2 == "") { print $1 }' /etc/shadow | xargs -n 1 passwd -l' "5.5.6 Lock empty password accounts"
+run_command 'awk -F: '\''($2 == "") { print $1 }'\'' /etc/shadow | xargs -r -n 1 passwd -l' "5.5.6 Lock empty password accounts"
 
 
 
@@ -360,11 +361,11 @@ EOF
 )
 run_command "echo '$RULES' > /etc/audit/rules.d/50-scope.rules" "6.1.2 Configure audit rules"
 # 6.1.3 - Configure auditd storage
-run_command 'echo "max_log_file = 50" >> /etc/audit/auditd.conf' "6.1.3 Set max audit log size (50MB)"
-run_command 'echo "max_log_file_action = rotate" >> /etc/audit/auditd.conf' "6.1.3 Configure log rotation"
-run_command 'echo "num_logs = 10" >> /etc/audit/auditd.conf' "6.1.3 Configure log rotation"
-run_command 'echo "disk_full_action = rotate" >> /etc/audit/auditd.conf' "6.1.3 Configure disk alerts"
-run_command 'echo "space_left_action = email" >> /etc/audit/auditd.conf' "6.1.3 Configure disk alerts"
+run_command 'grep -qxF "max_log_file = 50" /etc/audit/auditd.conf || echo "max_log_file = 50" >> /etc/audit/auditd.conf' "6.1.3 Set max audit log size (50MB)"
+run_command 'grep -qxF "max_log_file_action = rotate" /etc/audit/auditd.conf || echo "max_log_file_action = rotate" >> /etc/audit/auditd.conf' "6.1.3 Configure log rotation"
+run_command 'grep -qxF "num_logs = 10" /etc/audit/auditd.conf || echo "num_logs = 10" >> /etc/audit/auditd.conf' "6.1.3 Configure log rotation"
+run_command 'grep -qxF "disk_full_action = rotate" /etc/audit/auditd.conf || echo "disk_full_action = rotate" >> /etc/audit/auditd.conf' "6.1.3 Configure disk alerts"
+run_command 'grep -qxF "space_left_action = email" /etc/audit/auditd.conf || echo "space_left_action = email" >> /etc/audit/auditd.conf' "6.1.3 Configure disk alerts"
 
 start_section "6.2"
 
@@ -373,9 +374,9 @@ run_command 'apt install -y rsyslog' "6.2.1 Install rsyslog"
 run_command 'systemctl --now enable rsyslog' "6.2.1 Enable rsyslog"
 
 # 6.2.2 - Configure logging
-run_command 'echo "*.emerg :omusrmsg:*" >> /etc/rsyslog.d/50-default.conf' "6.2.2 Configure emergency alerts"
-run_command 'echo "mail.* -/var/log/mail.log" >> /etc/rsyslog.d/50-default.conf' "6.2.2 Configure mail logging"
-run_command 'echo "auth,authpriv.* /var/log/auth.log" >> /etc/rsyslog.d/50-default.conf' "6.2.2 Configure auth logging"
+run_command 'grep -qxF "*.emerg :omusrmsg:*" /etc/rsyslog.d/50-default.conf || echo "*.emerg :omusrmsg:*" >> /etc/rsyslog.d/50-default.conf' "6.2.2 Configure emergency alerts"
+run_command 'grep -qxF "mail.* -/var/log/mail.log" /etc/rsyslog.d/50-default.conf || echo "mail.* -/var/log/mail.log" >> /etc/rsyslog.d/50-default.conf' "6.2.2 Configure mail logging"
+run_command 'grep -qxF "auth,authpriv.* /var/log/auth.log" /etc/rsyslog.d/50-default.conf || echo "auth,authpriv.* /var/log/auth.log" >> /etc/rsyslog.d/50-default.conf' "6.2.2 Configure auth logging"
 
 # 6.2.3 - Configure log permissions
 run_command 'find /var/log -type f -exec chmod 640 {} \;' "6.2.3 Secure log file permissions"
@@ -393,8 +394,8 @@ run_command 'echo "  missingok" >> /etc/logrotate.d/sudo' "6.3.1 Ignore missing"
 run_command 'echo "}" >> /etc/logrotate.d/sudo' "6.3.1 Close config"
 
 # 6.3.2 - Configure systemd-journal
-run_command 'echo "Storage=persistent" >> /etc/systemd/journald.conf' "6.3.2 Enable persistent journal"
-run_command 'echo "SystemMaxUse=250M" >> /etc/systemd/journald.conf' "6.3.2 Limit journal size"
+run_command 'grep -qxF "Storage=persistent" /etc/systemd/journald.conf || echo "Storage=persistent" >> /etc/systemd/journald.conf' "6.3.2 Enable persistent journal"
+run_command 'grep -qxF "SystemMaxUse=250M" /etc/systemd/journald.conf || echo "SystemMaxUse=250M" >> /etc/systemd/journald.conf' "6.3.2 Limit journal size"
 run_command 'systemctl restart systemd-journald' "6.3.2 Restart journald"
 
 start_section "6.4"
@@ -404,28 +405,28 @@ run_command 'apt install -y acct' "6.4.1 Install process accounting"
 run_command 'systemctl --now enable psacct' "6.4.1 Enable process accounting"
 
 # 6.4.2 - Configure auditd process tracking
-run_command 'echo "-w /usr/bin/ -p x -k processes" >> /etc/audit/rules.d/50-processes.rules' "6.4.2 Monitor binary execution"
-run_command 'echo "-a always,exit -F arch=b64 -S execve -k processes" >> /etc/audit/rules.d/50-processes.rules' "6.4.2 Audit process execution"
+run_command 'grep -qxF -- "-w /usr/bin/ -p x -k processes" /etc/audit/rules.d/50-processes.rules 2>/dev/null || echo "-w /usr/bin/ -p x -k processes" >> /etc/audit/rules.d/50-processes.rules' "6.4.2 Monitor binary execution"
+run_command 'grep -qxF -- "-a always,exit -F arch=b64 -S execve -k processes" /etc/audit/rules.d/50-processes.rules 2>/dev/null || echo "-a always,exit -F arch=b64 -S execve -k processes" >> /etc/audit/rules.d/50-processes.rules' "6.4.2 Audit process execution"
 run_command 'service auditd restart' "6.4.2 Reload audit rules"
 
-# ===============[ SECTION 7: Host Based Firewall ]===============
-start_section "6.1"
-run_command 'chmod 644 /etc/passwd' "6.1.2 Set /etc/passwd permissions (644)"
-run_command 'chown root:root /etc/passwd' "6.1.2 Verify /etc/passwd ownership"
-run_command 'chmod 000 /etc/shadow' "6.1.3 Lock /etc/shadow permissions (000)"
-run_command 'chown root:shadow /etc/shadow' "6.1.3 Set /etc/shadow ownership"
-run_command 'chmod 644 /etc/group' "6.1.4 Set /etc/group permissions (644)"
-run_command 'chown root:root /etc/group' "6.1.4 Verify /etc/group ownership"
-run_command 'chmod 000 /etc/gshadow' "6.1.5 Lock /etc/gshadow permissions (000)"
-run_command 'chown root:shadow /etc/gshadow' "6.1.5 Set /etc/gshadow ownership"
-run_command 'chmod 600 /etc/passwd-' "6.1.6 Secure /etc/passwd- backup (600)"
-run_command 'chown root:root /etc/passwd-' "6.1.6 Verify /etc/passwd- ownership"
-run_command 'chmod 600 /etc/shadow-' "6.1.7 Secure /etc/shadow- backup (600)"
-run_command 'chown root:shadow /etc/shadow-' "6.1.7 Set /etc/shadow- ownership"
-run_command 'chmod 600 /etc/group-' "6.1.8 Secure /etc/group- backup (600)"
-run_command 'chown root:root /etc/group-' "6.1.8 Verify /etc/group- ownership"
-run_command 'chmod 600 /etc/gshadow-' "6.1.9 Secure /etc/gshadow- backup (600)"
-run_command 'chown root:shadow /etc/gshadow-' "6.1.9 Set /etc/gshadow- ownership"
+# ===============[ SECTION 7: Account File Permissions ]===============
+start_section "7.1"
+run_command 'chmod 644 /etc/passwd' "7.1.2 Set /etc/passwd permissions (644)"
+run_command 'chown root:root /etc/passwd' "7.1.2 Verify /etc/passwd ownership"
+run_command 'chmod 640 /etc/shadow' "7.1.3 Set /etc/shadow permissions (640)"
+run_command 'chown root:shadow /etc/shadow' "7.1.3 Set /etc/shadow ownership"
+run_command 'chmod 644 /etc/group' "7.1.4 Set /etc/group permissions (644)"
+run_command 'chown root:root /etc/group' "7.1.4 Verify /etc/group ownership"
+run_command 'chmod 640 /etc/gshadow' "7.1.5 Set /etc/gshadow permissions (640)"
+run_command 'chown root:shadow /etc/gshadow' "7.1.5 Set /etc/gshadow ownership"
+run_command 'chmod 600 /etc/passwd-' "7.1.6 Secure /etc/passwd- backup (600)"
+run_command 'chown root:root /etc/passwd-' "7.1.6 Verify /etc/passwd- ownership"
+run_command 'chmod 600 /etc/shadow-' "7.1.7 Secure /etc/shadow- backup (600)"
+run_command 'chown root:shadow /etc/shadow-' "7.1.7 Set /etc/shadow- ownership"
+run_command 'chmod 600 /etc/group-' "7.1.8 Secure /etc/group- backup (600)"
+run_command 'chown root:root /etc/group-' "7.1.8 Verify /etc/group- ownership"
+run_command 'chmod 600 /etc/gshadow-' "7.1.9 Secure /etc/gshadow- backup (600)"
+run_command 'chown root:shadow /etc/gshadow-' "7.1.9 Set /etc/gshadow- ownership"
 
 # Final report
 echo -e "\nHardening complete. Summary of errors:"
